@@ -64,11 +64,13 @@ Arena* ArenaAlloc (unsigned pages) {
 	return arena;
 }
 int ArenaRelease(Arena* arena) {
-	return munmap((void*)arena->start_ptr, arena->size);
+	int result = munmap((void*)arena->start_ptr, arena->size);
+	free (arena);
+	return result;
 }
 
 void ArenaSetAlignment(Arena* arena, size_t new_alignment) {
-	if (!(new_alignment % 16) || new_alignment < 16 || arena->ptr + new_alignment >= arena->end_ptr)
+	if (new_alignment % 16 || new_alignment < 16 || arena->ptr + new_alignment >= arena->end_ptr)
 		return ;
 	arena->alignment = new_alignment;
 	arena->ptr = (arena->ptr + (arena->alignment -1)) & ~(arena->alignment -1);
@@ -78,23 +80,23 @@ void ArenaSetAlignment(Arena* arena, size_t new_alignment) {
 
 
 void* ArenaPush(Arena* arena, size_t size) {
-	if ((arena->ptr + size) >=  arena->end_ptr) {
-		perror("Arena too small for allocation. Next time make arena bigger or fix your memory leaks. Unused virtual memory is free!");
+	if (!arena || size == 0 || (arena->ptr + size) >=  arena->end_ptr){
 		return NULL;
 	}
 	uintptr_t newptr;
 	newptr = arena->ptr;
 	arena->ptr = (arena->ptr + size + (arena->alignment -1)) & ~(arena->alignment -1);
 
-
 	return (void*) newptr;
 }
 
 
 void* ArenaPopTo (Arena* arena, void* pos) {
-	if ((uintptr_t)pos > arena->end_ptr || (uintptr_t)pos < arena->start_ptr)
+	if (!arena || !pos || 
+		(uintptr_t)pos > arena->end_ptr || 
+		(uintptr_t)pos < arena->start_ptr) {
 		return NULL;
-	
+	}
 	arena->ptr = ((uintptr_t)pos + (arena->alignment -1)) & ~(arena->alignment -1);
 	return (void*)arena->ptr;
 

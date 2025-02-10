@@ -13,43 +13,20 @@ typedef struct Arena_t {
 	size_t size;
 } Arena;
 
-/*Arena* ArenaAlloc (size_t capacity) {
-	// get system page size
-	long page_size = getpagesize();
-	if (page_size == -1) {
-		perror("Could not get page size");
-		exit(EXIT_FAILURE);
-	}
-	if (capacity < page_size) {
-		capacity = page_size;
-	}
-	size_t alloc;
-	if (capacity%page_size != 0) {
-		//align alloc to page_size
-		alloc = capacity - (capacity % page_size) + page_size;
-	} else {alloc = capacity;}
-	Arena* arena;
-	arena = malloc(sizeof(Arena));
-	arena->ptr = mmap(NULL, alloc, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	if (arena->ptr == MAP_FAILED) {
-		perror("couldn't allocate arena");
-		exit(EXIT_FAILURE);
-	}
-	arena->start_ptr = arena->ptr;
-	arena->alignment = 16;
-	arena->size = alloc;
-	arena->end_ptr = arena->ptr + arena->size;
-	return arena;
-}*/
 
 Arena* ArenaAlloc (unsigned pages) {
 	// get system page size
-	long page_size = getpagesize();
+	size_t page_size = getpagesize();
 	if (page_size == -1) {
 		perror("Could not get page size");
 		exit(EXIT_FAILURE);
 	}
-	size_t alloc = pages * page_size;
+	#ifdef DEBUG_BUILD
+	//allocate an extra page for mprotect in debug mode
+	size_t alloc = (pages+1) * page_size;
+	#else
+	size_t alloc = (pages) * page_size;
+	#endif
 	Arena* arena;
 	arena = malloc(sizeof(Arena));
 	arena->ptr = (uintptr_t) mmap(NULL, alloc, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -61,23 +38,32 @@ Arena* ArenaAlloc (unsigned pages) {
 	arena->alignment = 16;
 	arena->size = alloc;
 	arena->end_ptr = arena->ptr + arena->size;
+	//mprotect in debug builds
+	#ifdef DEBUG_BUILD
+	arena->end_ptr = arena->end_ptr - page_size;
+	arena->size = arena->size - page_size;
+	if(mprotect((void*)arena->end_ptr, page_size, PROT_NONE) != 0){
+		return NULL;
+	}
+	#endif
 	return arena;
 }
 int ArenaRelease(Arena* arena) {
-    if (!arena) {
-        return -1;
-    }
-    int result = munmap((void*)arena->start_ptr, arena->size);
-    free(arena);
-    return result;
+	if (!arena) {
+		return -1;
+	}
+	int result = munmap((void*)arena->start_ptr, arena->size);
+	free(arena);
+	return result;
 }
 
-void ArenaSetAlignment(Arena* arena, size_t new_alignment) {
+int ArenaSetAlignment(Arena* arena, size_t new_alignment) {
 	assert(arena->ptr < arena->end_ptr);
 	if (new_alignment % 16 || new_alignment < 16 || arena->ptr + new_alignment >= arena->end_ptr)
-		return ;
+		return -1;
 	arena->alignment = new_alignment;
 	arena->ptr = (arena->ptr + (arena->alignment -1)) & ~(arena->alignment -1);
+	return 0;
 }
 
 

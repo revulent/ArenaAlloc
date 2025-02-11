@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <assert.h>
+#include <string.h>
+#include <stdbool.h>
 
 typedef struct Arena_t {
 	uintptr_t ptr;
@@ -11,6 +13,10 @@ typedef struct Arena_t {
 	size_t alignment;
 	uintptr_t end_ptr;
 	size_t size;
+	size_t elem_size;
+	struct Arena_t* free_list;
+	void** to_free;
+	bool one_type;
 } Arena;
 
 
@@ -21,7 +27,7 @@ Arena* ArenaAlloc (unsigned pages) {
 		perror("Could not get page size");
 		exit(EXIT_FAILURE);
 	}
-	#ifdef DEBUG_BUILD
+	#ifdef CONFIG_MPROTECT_ARENA
 	//allocate an extra page for mprotect in debug mode
 	size_t alloc = (pages+1) * page_size;
 	#else
@@ -29,6 +35,7 @@ Arena* ArenaAlloc (unsigned pages) {
 	#endif
 	Arena* arena;
 	arena = malloc(sizeof(Arena));
+	assert(arena != NULL);
 	arena->ptr = (uintptr_t) mmap(NULL, alloc, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (arena->ptr == (uintptr_t)MAP_FAILED) {
 		perror("couldn't allocate arena");
@@ -38,8 +45,10 @@ Arena* ArenaAlloc (unsigned pages) {
 	arena->alignment = 16;
 	arena->size = alloc;
 	arena->end_ptr = arena->ptr + arena->size;
-	//mprotect in debug builds
-	#ifdef DEBUG_BUILD
+	arena->free_list = NULL;
+	arena->one_type = false;
+	arena->elem_size = 0;
+	#ifdef CONFIG_MPROTECT_ARENA
 	arena->end_ptr = arena->end_ptr - page_size;
 	arena->size = arena->size - page_size;
 	if(mprotect((void*)arena->end_ptr, page_size, PROT_NONE) != 0){
@@ -52,7 +61,11 @@ int ArenaRelease(Arena* arena) {
 	if (!arena) {
 		return -1;
 	}
+	#ifdef CONFIG_MPTROTECT_ARENA
+	int result = munmap((void*)arena->start_ptr, arena->size + getpagesize());
+	#else
 	int result = munmap((void*)arena->start_ptr, arena->size);
+	#endif
 	free(arena);
 	return result;
 }
@@ -67,18 +80,29 @@ int ArenaSetAlignment(Arena* arena, size_t new_alignment) {
 }
 
 
+void ArenaPop (Arena* arena, void* ptr); 
 
 void* ArenaPush(Arena* arena, size_t size) {
 	assert(arena->ptr < arena->end_ptr);
 	if (!arena || size == 0 || (arena->ptr + size + arena->alignment) >=  arena->end_ptr){
 		return NULL;
 	}
-	uintptr_t newptr;
-	newptr = arena->ptr;
+	void* newptr;
+	newptr = NULL;
+	if (arena->free_list) {
+		assert(arena->one_type == true);
+		assert(arena->elem_size > 0);
+		newptr = *arena->to_free; 
+		ArenaPop(arena->free_list, arena->to_free);
+	} else {
+		newptr = (void*) arena->ptr;
+	}
+
 	arena->ptr = (arena->ptr + size + (arena->alignment -1)) & ~(arena->alignment -1);
 
-	return (void*) newptr;
+	return newptr;
 }
+
 
 
 void* ArenaPopTo (Arena* arena, void* pos) {
@@ -88,7 +112,44 @@ void* ArenaPopTo (Arena* arena, void* pos) {
 		(uintptr_t)pos < arena->start_ptr) {
 		return NULL;
 	}
+	if (arena->one_type) {
+		memset(pos, 0, arena->elem_size);
+	}
 	arena->ptr = ((uintptr_t)pos + (arena->alignment -1)) & ~(arena->alignment -1);
 	return (void*)arena->ptr;
 
+}
+
+void ArenaPop (Arena* arena, void* ptr) {
+	assert(arena->ptr < arena->end_ptr);
+	assert(arena->one_type == true);
+	assert(arena->elem_size > 0);
+
+	if (arena->ptr == (uintptr_t) ptr) {
+		ArenaPopTo(arena, (void*)((uintptr_t)ptr - arena->elem_size));
+	} else {
+		size_t page_size = getpagesize();
+		if (!(arena->free_list)) {
+			arena->free_list = ArenaAlloc(arena->size / page_size);
+			arena->free_list->one_type = true;
+			arena->free_list->elem_size = sizeof(void*);
+		}
+		assert(arena->free_list != NULL);
+		arena->to_free = (void**)ArenaPush(arena->free_list, sizeof(void*));
+		*(arena->to_free) = ptr;
+	}
+	memset(ptr, 0, arena->elem_size);
+}
+
+void ArenaSwap(Arena* arena, void* elem1, void* elem2) {
+	assert(arena->one_type == true);
+	assert(arena->elem_size > 0);
+	uint page_size = getpagesize();
+	Arena* scratch = ArenaAlloc((arena->elem_size + page_size -1) / page_size);
+	void* buffer = ArenaPush(scratch, arena->elem_size);
+	memcpy(buffer, elem1, arena->elem_size);
+	memcpy(elem1, elem2, arena->elem_size);
+	memcpy(elem2, buffer, arena->elem_size);
+	int release = ArenaRelease(scratch);
+	assert(release == 0);
 }

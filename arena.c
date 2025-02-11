@@ -8,14 +8,23 @@
 #include <stdbool.h>
 
 typedef struct Arena_t {
+	//pointer to the current position in the arena stack
 	uintptr_t ptr;
+	//pointer to the start of the arena
 	uintptr_t start_ptr;
+	//alignment of the arena. Can be changed with ArenaSetAlignment
 	size_t alignment;
+	//pointer to the end of the Arena
 	uintptr_t end_ptr;
+	//total size of the arena in bytes
 	size_t size;
+	//If this Arena is used to hold a single type, set the element size to this variable
 	size_t elem_size;
+	//pointer to the free_list arena to be used if the Arena is of a single type and if you call ArenaPop() on an element of the Arena. This enables ArenaPush to replace the slot that was pop'd with ArenaPop
 	struct Arena_t* free_list;
+	//pointer to the next free slot if ArenaPop was used
 	void** to_free;
+	//Boolean that determines if the Arena is meant to hold a single type or not. You must set this if you want the extra features of a single type Arena
 	bool one_type;
 } Arena;
 
@@ -51,7 +60,7 @@ Arena* ArenaAlloc (unsigned pages) {
 	#ifdef CONFIG_MPROTECT_ARENA
 	arena->end_ptr = arena->end_ptr - page_size;
 	arena->size = arena->size - page_size;
-	if(mprotect((void*)arena->end_ptr, page_size, PROT_NONE) != 0){
+	if(mprotect((void*)arena->end_ptr+16, page_size, PROT_NONE) != 0){
 		return NULL;
 	}
 	#endif
@@ -60,6 +69,9 @@ Arena* ArenaAlloc (unsigned pages) {
 int ArenaRelease(Arena* arena) {
 	if (!arena) {
 		return -1;
+	}
+	if (!(arena->free_list)) {
+		ArenaRelease(arena->free_list);
 	}
 	#ifdef CONFIG_MPTROTECT_ARENA
 	int result = munmap((void*)arena->start_ptr, arena->size + getpagesize());
@@ -70,6 +82,7 @@ int ArenaRelease(Arena* arena) {
 	return result;
 }
 
+//returns -1 if the alignment specified is not possible
 int ArenaSetAlignment(Arena* arena, size_t new_alignment) {
 	assert(arena->ptr < arena->end_ptr);
 	if (new_alignment % 16 || new_alignment < 16 || arena->ptr + new_alignment >= arena->end_ptr)
@@ -82,6 +95,7 @@ int ArenaSetAlignment(Arena* arena, size_t new_alignment) {
 
 void ArenaPop (Arena* arena, void* ptr); 
 
+//pushes a new element to the Arena. If the Arena is of a single type and ArenaPop was called, it will insert the newest element into the last hole left by ArenaPop
 void* ArenaPush(Arena* arena, size_t size) {
 	assert(arena->ptr < arena->end_ptr);
 	if (!arena || size == 0 || (arena->ptr + size + arena->alignment) >=  arena->end_ptr){
@@ -90,6 +104,7 @@ void* ArenaPush(Arena* arena, size_t size) {
 	void* newptr;
 	newptr = NULL;
 	if (arena->free_list) {
+		//if a free list exists, it must already be of one_type unless something went horribly wrong
 		assert(arena->one_type == true);
 		assert(arena->elem_size > 0);
 		newptr = *arena->to_free; 
@@ -98,6 +113,7 @@ void* ArenaPush(Arena* arena, size_t size) {
 		newptr = (void*) arena->ptr;
 	}
 
+	//if the size of the push is not aligned with the arena, this aligns the pointer
 	arena->ptr = (arena->ptr + size + (arena->alignment -1)) & ~(arena->alignment -1);
 
 	return newptr;
@@ -105,6 +121,7 @@ void* ArenaPush(Arena* arena, size_t size) {
 
 
 
+//unlike ArenaPop, this simply moves the arena->ptr to the position specified in pos. If the Arena is of one type, it will also zero out the element at pos
 void* ArenaPopTo (Arena* arena, void* pos) {
 	assert(arena->ptr < arena->end_ptr);
 	if (!arena || !pos || 
@@ -120,6 +137,8 @@ void* ArenaPopTo (Arena* arena, void* pos) {
 
 }
 
+//this function only works for Arenas of a single type. It will "free" the location in memory provided by the pointer and add that address to the free list so that ArenaPush can use it next time
+//also, this leaks memory for every pointer added to the free list until the arena is released. Pointers are only 16 bytes and arenas are on virtual pages so this shouldn't matter
 void ArenaPop (Arena* arena, void* ptr) {
 	assert(arena->ptr < arena->end_ptr);
 	assert(arena->one_type == true);
@@ -141,6 +160,7 @@ void ArenaPop (Arena* arena, void* ptr) {
 	memset(ptr, 0, arena->elem_size);
 }
 
+//swaps two elements of an Arena. Only works for Arenas of a single type
 void ArenaSwap(Arena* arena, void* elem1, void* elem2) {
 	assert(arena->one_type == true);
 	assert(arena->elem_size > 0);

@@ -95,7 +95,7 @@ int ArenaSetAlignment(Arena* arena, size_t new_alignment) {
 }
 
 
-void ArenaPop (Arena* arena, void* ptr); 
+void* ArenaPop (Arena* arena, void* ptr); 
 
 //pushes a new element to the Arena. If the Arena is of a single type and ArenaPop was called, it will insert the newest element into the last hole left by ArenaPop
 void* ArenaPush(Arena* arena, size_t size) {
@@ -105,12 +105,12 @@ void* ArenaPush(Arena* arena, size_t size) {
 	}
 	void* newptr;
 	newptr = NULL;
-	if (arena->free_list) {
+	if (arena->free_list && arena->to_free) {
 		//if a free list exists, it must already be of one_type unless something went horribly wrong
 		assert(arena->one_type == true);
 		assert(arena->elem_size > 0);
 		newptr = *arena->to_free; 
-		ArenaPop(arena->free_list, arena->to_free);
+		arena->to_free = (void**) ArenaPop(arena->free_list, arena->to_free);
 	} else {
 		newptr = (void*) arena->ptr;
 	}
@@ -140,26 +140,33 @@ void* ArenaPopTo (Arena* arena, void* pos) {
 }
 
 //this function only works for Arenas of a single type. It will "free" the location in memory provided by the pointer and add that address to the free list so that ArenaPush can use it next time
-//also, this leaks memory for every pointer added to the free list until the arena is released. Pointers are only 16 bytes and arenas are on virtual pages so this shouldn't matter
-void ArenaPop (Arena* arena, void* ptr) {
+//returns arena->ptr if pop was successful, otherwise NULL
+void* ArenaPop (Arena* arena, void* ptr) {
 	assert(arena->ptr < arena->end_ptr);
 	assert(arena->one_type == true);
 	assert(arena->elem_size > 0);
+	void* result;
 
 	if (arena->ptr - arena->elem_size == (uintptr_t) ptr) {
-		ArenaPopTo(arena, ptr);
+		result = ArenaPopTo(arena, ptr);
 	} else {
-		size_t page_size = getpagesize();
+		result = (void*) arena->ptr;
 		if (!(arena->free_list)) {
-			arena->free_list = ArenaAlloc(arena->size / page_size);
+			arena->free_list = ArenaAlloc(arena->size / getpagesize());
 			arena->free_list->one_type = true;
 			arena->free_list->elem_size = sizeof(void*);
 		}
 		assert(arena->free_list != NULL);
+		memset(ptr, 0, arena->elem_size);
 		arena->to_free = (void**)ArenaPush(arena->free_list, sizeof(void*));
-		*(arena->to_free) = ptr;
+		if(arena->to_free){
+			*(arena->to_free) = ptr;
+		} else {
+			fprintf(stderr, "Failed to set up void** to_free for Arena");
+		}
 	}
 	memset(ptr, 0, arena->elem_size);
+	return (void*) result;
 }
 
 //swaps two elements of an Arena. Only works for Arenas of a single type

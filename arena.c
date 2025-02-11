@@ -146,8 +146,8 @@ void ArenaPop (Arena* arena, void* ptr) {
 	assert(arena->one_type == true);
 	assert(arena->elem_size > 0);
 
-	if (arena->ptr == (uintptr_t) ptr) {
-		ArenaPopTo(arena, (void*)((uintptr_t)ptr - arena->elem_size));
+	if (arena->ptr - arena->elem_size == (uintptr_t) ptr) {
+		ArenaPopTo(arena, ptr);
 	} else {
 		size_t page_size = getpagesize();
 		if (!(arena->free_list)) {

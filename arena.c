@@ -23,7 +23,7 @@ typedef struct Arena_t {
 	//pointer to the next free slot if ArenaPop was used
 	void** to_free;
 	//alignment of the arena. Can be changed with ArenaSetAlignment
-	uint alignment;
+	uintptr_t alignment;
 	//Boolean that determines if the Arena is meant to hold a single type or not. You must set this if you want the extra features of a single type Arena
 	bool one_type;
 } Arena;
@@ -36,12 +36,8 @@ Arena* ArenaAlloc (unsigned pages) {
 		perror("Could not get page size");
 		exit(EXIT_FAILURE);
 	}
-	#ifdef CONFIG_MPROTECT_ARENA
 	//allocate an extra page for mprotect in debug mode
 	size_t alloc = (pages+1) * page_size;
-	#else
-	size_t alloc = (pages) * page_size;
-	#endif
 	Arena* arena;
 	arena = malloc(sizeof(Arena));
 	assert(arena != NULL);
@@ -52,18 +48,15 @@ Arena* ArenaAlloc (unsigned pages) {
 	}
 	arena->start_ptr = arena->ptr;
 	arena->alignment = 16;
-	arena->size = alloc;
+	arena->size = alloc - page_size;
 	arena->end_ptr = arena->ptr + arena->size;
 	arena->free_list = NULL;
 	arena->one_type = false;
 	arena->elem_size = 0;
-	#ifdef CONFIG_MPROTECT_ARENA
-	arena->end_ptr = arena->end_ptr - page_size;
-	arena->size = arena->size - page_size;
-	if(mprotect((void*)arena->end_ptr+16, page_size, PROT_NONE) != 0){
+		if(mprotect((void*)(arena->end_ptr), page_size, PROT_NONE) != 0){
 		return NULL;
 	}
-	#endif
+
 	return arena;
 }
 int ArenaRelease(Arena* arena) {
@@ -75,11 +68,7 @@ int ArenaRelease(Arena* arena) {
 		ArenaRelease(arena->free_list);
 		arena->free_list = NULL;
 	}
-	#ifdef CONFIG_MPTROTECT_ARENA
 	int result = munmap((void*)arena->start_ptr, arena->size + getpagesize());
-	#else
-	int result = munmap((void*)arena->start_ptr, arena->size);
-	#endif
 	free(arena);
 	return result;
 }
@@ -101,11 +90,12 @@ void ArenaDrop (Arena* arena, void* ptr);
 void* ArenaPush(Arena* arena, size_t size) {
 	assert(arena->ptr < arena->end_ptr);
 	if (!arena || size == 0 || (arena->ptr + size + arena->alignment) >=  arena->end_ptr){
-		fprintf(stderr, "Something went wrong with the ArenaPush().\n arena = %p\n size to push = %ld\n arena->alignment = %d\n arena->ptr = %ld\n arena->start_ptr = %ld\n arena->end_ptr = %ld\n", arena, size, arena->alignment, arena->ptr, arena->start_ptr, arena->end_ptr);
+		fprintf(stderr, "Something went wrong with the ArenaPush().\n arena = %p\n size to push = %ld\n arena->alignment = %ld\n arena->ptr = %ld\n arena->start_ptr = %ld\n arena->end_ptr = %ld\n", arena, size, arena->alignment, arena->ptr, arena->start_ptr, arena->end_ptr);
 		return NULL;
 	}
 	void* newptr;
 	newptr = NULL;
+	//reuse a free spot if one is available
 	if (arena->free_list && arena->to_free && (arena->free_list->start_ptr != arena->free_list->ptr)) {
 		//if a free list exists, it must already be of one_type unless something went horribly wrong
 		assert(arena->one_type == true);
@@ -114,22 +104,27 @@ void* ArenaPush(Arena* arena, size_t size) {
 		memset(newptr, 0, arena->elem_size);
 		ArenaDrop(arena->free_list, arena->to_free);
 		if (arena->free_list->start_ptr == arena->free_list->ptr) {
+			//we are at the end (or start, depending on how you look at it) of the free_list
 			arena->to_free = NULL;
 		} else {
 			arena->to_free = (void**) ArenaPush(arena->free_list, sizeof(void*));
 		}
 	} else {
 		newptr = (void*) arena->ptr;
+		arena->to_free = NULL;
+		if (arena->one_type) {
+			memset(newptr, 0, arena->elem_size);
+		}
+		//if the size of the push is not aligned with the arena, this aligns the pointer
+		arena->ptr = (arena->ptr + size + (arena->alignment -1)) & ~(arena->alignment -1);
 	}
 
-	//if the size of the push is not aligned with the arena, this aligns the pointer
-	arena->ptr = (arena->ptr + size + (arena->alignment -1)) & ~(arena->alignment -1);
 	return newptr;
 }
 
 
 
-void ArenaPopTo (Arena* arena, void* pos) {
+void ArenaDropTo (Arena* arena, void* pos) {
 	assert(arena->ptr < arena->end_ptr);
 	if (!arena || !pos || 
 		(uintptr_t)pos > arena->end_ptr || 
@@ -157,8 +152,9 @@ void ArenaDrop (Arena* arena, void* ptr) {
 		arena->to_free = NULL;
 	}
 	
-	//if ptr is the top element in the Arena stack, just ArenaPopTo() the ptr
+	//if ptr is the top element in the Arena stack, just ArenaDropTo() the ptr
 	if (arena->ptr - arena->elem_size == (uintptr_t) ptr) {
+		ArenaDropTo(arena, ptr);
 	} else {
 		//if there is no free_list, make one
 		if (!(arena->free_list)) {
@@ -168,7 +164,6 @@ void ArenaDrop (Arena* arena, void* ptr) {
 		}
 		//this is just in case the free_list ArenaAlloc() fails
 		assert(arena->free_list != NULL);
-		memset(ptr, 0, arena->elem_size);
 		arena->to_free = (void**)ArenaPush(arena->free_list, sizeof(void*));
 		if(arena->to_free){
 			*(arena->to_free) = ptr;
@@ -178,7 +173,7 @@ void ArenaDrop (Arena* arena, void* ptr) {
 	}
 }
 
-//Just like ArenaPop, but 0's the memory indicated by the ptr
+//Just like ArenaDrop, but 0's the memory indicated by the ptr
 void ArenaPop (Arena* arena, void* ptr) {
 	ArenaDrop(arena, ptr);
 	memset(ptr, 0, arena->elem_size);

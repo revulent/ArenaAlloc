@@ -70,8 +70,10 @@ int ArenaRelease(Arena* arena) {
 	if (!arena) {
 		return -1;
 	}
+	//release the free list first
 	if (!(arena->free_list)) {
 		ArenaRelease(arena->free_list);
+		arena->free_list = NULL;
 	}
 	#ifdef CONFIG_MPTROTECT_ARENA
 	int result = munmap((void*)arena->start_ptr, arena->size + getpagesize());

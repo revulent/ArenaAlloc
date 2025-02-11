@@ -12,8 +12,6 @@ typedef struct Arena_t {
 	uintptr_t ptr;
 	//pointer to the start of the arena
 	uintptr_t start_ptr;
-	//alignment of the arena. Can be changed with ArenaSetAlignment
-	size_t alignment;
 	//pointer to the end of the Arena
 	uintptr_t end_ptr;
 	//total size of the arena in bytes
@@ -24,6 +22,8 @@ typedef struct Arena_t {
 	struct Arena_t* free_list;
 	//pointer to the next free slot if ArenaPop was used
 	void** to_free;
+	//alignment of the arena. Can be changed with ArenaSetAlignment
+	uint alignment;
 	//Boolean that determines if the Arena is meant to hold a single type or not. You must set this if you want the extra features of a single type Arena
 	bool one_type;
 } Arena;
@@ -95,78 +95,93 @@ int ArenaSetAlignment(Arena* arena, size_t new_alignment) {
 }
 
 
-void* ArenaPop (Arena* arena, void* ptr); 
+void ArenaDrop (Arena* arena, void* ptr); 
 
-//pushes a new element to the Arena. If the Arena is of a single type and ArenaPop was called, it will insert the newest element into the last hole left by ArenaPop
+//pushes a new element to the Arena. If the Arena is of a single type and ArenaPop was called, it will insert the newest element into the last hole left by ArenaDrop()
 void* ArenaPush(Arena* arena, size_t size) {
 	assert(arena->ptr < arena->end_ptr);
 	if (!arena || size == 0 || (arena->ptr + size + arena->alignment) >=  arena->end_ptr){
+		fprintf(stderr, "Something went wrong with the ArenaPush().\n arena = %p\n size to push = %ld\n arena->alignment = %d\n arena->ptr = %ld\n arena->start_ptr = %ld\n arena->end_ptr = %ld\n", arena, size, arena->alignment, arena->ptr, arena->start_ptr, arena->end_ptr);
 		return NULL;
 	}
 	void* newptr;
 	newptr = NULL;
-	if (arena->free_list && arena->to_free) {
+	if (arena->free_list && arena->to_free && (arena->free_list->start_ptr != arena->free_list->ptr)) {
 		//if a free list exists, it must already be of one_type unless something went horribly wrong
 		assert(arena->one_type == true);
 		assert(arena->elem_size > 0);
 		newptr = *arena->to_free; 
-		arena->to_free = (void**) ArenaPop(arena->free_list, arena->to_free);
+		memset(newptr, 0, arena->elem_size);
+		ArenaDrop(arena->free_list, arena->to_free);
+		if (arena->free_list->start_ptr == arena->free_list->ptr) {
+			arena->to_free = NULL;
+		} else {
+			arena->to_free = (void**) ArenaPush(arena->free_list, sizeof(void*));
+		}
 	} else {
 		newptr = (void*) arena->ptr;
 	}
 
 	//if the size of the push is not aligned with the arena, this aligns the pointer
 	arena->ptr = (arena->ptr + size + (arena->alignment -1)) & ~(arena->alignment -1);
-
 	return newptr;
 }
 
 
 
-//unlike ArenaPop, this simply moves the arena->ptr to the position specified in pos. If the Arena is of one type, it will also zero out the element at pos
-void* ArenaPopTo (Arena* arena, void* pos) {
+void ArenaPopTo (Arena* arena, void* pos) {
 	assert(arena->ptr < arena->end_ptr);
 	if (!arena || !pos || 
 		(uintptr_t)pos > arena->end_ptr || 
 		(uintptr_t)pos < arena->start_ptr) {
-		return NULL;
+		fprintf(stderr,"Something went wrong calling ArenaPopTo() arena = %p\n ArenaPopTo position = %p\n arena->start_ptr = %ld \n arena->end_ptr = %ld \n", arena, pos, arena->start_ptr, arena->end_ptr);
+		return;
 	}
-	if (arena->one_type) {
-		memset(pos, 0, arena->elem_size);
-	}
+
 	arena->ptr = ((uintptr_t)pos + (arena->alignment -1)) & ~(arena->alignment -1);
-	return (void*)arena->ptr;
+	if (arena->ptr == arena->start_ptr) {
+		arena->to_free = NULL;
+	}
 
 }
 
 //this function only works for Arenas of a single type. It will "free" the location in memory provided by the pointer and add that address to the free list so that ArenaPush can use it next time
-//returns arena->ptr if pop was successful, otherwise NULL
-void* ArenaPop (Arena* arena, void* ptr) {
+void ArenaDrop (Arena* arena, void* ptr) {
 	assert(arena->ptr < arena->end_ptr);
 	assert(arena->one_type == true);
 	assert(arena->elem_size > 0);
-	void* result;
+	assert(arena->ptr >= arena->start_ptr);
 
+	if( arena->ptr == arena->start_ptr) {
+		fprintf(stderr, "Tried to ArenaDrop() on an Arena that hasn't had anything added to it or has been ArenaPopTo()'d the start of the Arena\n");
+		arena->to_free = NULL;
+	}
+	
+	//if ptr is the top element in the Arena stack, just ArenaPopTo() the ptr
 	if (arena->ptr - arena->elem_size == (uintptr_t) ptr) {
-		result = ArenaPopTo(arena, ptr);
 	} else {
-		result = (void*) arena->ptr;
+		//if there is no free_list, make one
 		if (!(arena->free_list)) {
 			arena->free_list = ArenaAlloc(arena->size / getpagesize());
 			arena->free_list->one_type = true;
 			arena->free_list->elem_size = sizeof(void*);
 		}
+		//this is just in case the free_list ArenaAlloc() fails
 		assert(arena->free_list != NULL);
 		memset(ptr, 0, arena->elem_size);
 		arena->to_free = (void**)ArenaPush(arena->free_list, sizeof(void*));
 		if(arena->to_free){
 			*(arena->to_free) = ptr;
 		} else {
-			fprintf(stderr, "Failed to set up void** to_free for Arena");
+			fprintf(stderr, "Failed to set up void** to_free for Arena\n");
 		}
 	}
+}
+
+//Just like ArenaPop, but 0's the memory indicated by the ptr
+void ArenaPop (Arena* arena, void* ptr) {
+	ArenaDrop(arena, ptr);
 	memset(ptr, 0, arena->elem_size);
-	return (void*) result;
 }
 
 //swaps two elements of an Arena. Only works for Arenas of a single type

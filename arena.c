@@ -34,8 +34,7 @@ int ArenaSetAlignment(Arena* arena, size_t new_alignment);
 
 Arena* ArenaAlloc (unsigned pages) {
 	// get system page size
-	printf("arenaAlloc() started\n");
-	size_t page_size = getpagesize();
+	int16_t page_size = getpagesize();
 	if (page_size == -1) {
 		perror("Could not get page size");
 		exit(EXIT_FAILURE);
@@ -70,7 +69,7 @@ int ArenaRelease(Arena* arena) {
 		return -1;
 	}
 	//release the free list first
-	if (!(arena->free_list)) {
+	if (arena->free_list) {
 		ArenaRelease(arena->free_list);
 		arena->free_list = NULL;
 	}
@@ -95,7 +94,6 @@ void ArenaDrop (Arena* arena, void* ptr);
 
 //pushes a new element to the Arena. If the Arena is of a single type and ArenaPop was called, it will insert the newest element into the last hole left by ArenaDrop()
 void* ArenaPush(Arena* arena, size_t size) {
-	printf("entered ArenaPush()\n");
 	assert(arena->ptr < arena->end_ptr);
 	if (!arena || size == 0 || (arena->ptr + size + arena->alignment) >=  arena->end_ptr){
 		fprintf(stderr, "Something went wrong with the ArenaPush().\n arena = %p\n size to push = %ld\n arena->alignment = %ld\n arena->ptr = %ld\n arena->start_ptr = %ld\n arena->end_ptr = %ld\n", arena, size, arena->alignment, arena->ptr, arena->start_ptr, arena->end_ptr);
@@ -137,7 +135,7 @@ void ArenaDropTo (Arena* arena, void* pos) {
 	if (!arena || !pos || 
 		(uintptr_t)pos > arena->end_ptr || 
 		(uintptr_t)pos < arena->first_ptr) {
-		fprintf(stderr,"Something went wrong calling ArenaPopTo() arena = %p\n ArenaPopTo position = %p\n arena->start_ptr = %ld \n arena->end_ptr = %ld \n", arena, pos, arena->start_ptr, arena->end_ptr);
+		fprintf(stderr,"Something went wrong calling ArenaDropTo() arena = %p\n ArenaPopTo position = %p\n arena->start_ptr = %ld \n arena->end_ptr = %ld \n", arena, pos, arena->start_ptr, arena->end_ptr);
 		return;
 	}
 
@@ -184,7 +182,6 @@ void ArenaDrop (Arena* arena, void* ptr) {
 
 //Just like ArenaDrop, but 0's the memory indicated by the ptr
 void ArenaPop (Arena* arena, void* ptr) {
-	printf("entering ArenaPop\n");
 	ArenaDrop(arena, ptr);
 	memset(ptr, 0, arena->elem_size);
 }

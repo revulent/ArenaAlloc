@@ -50,7 +50,7 @@ Arena* ArenaAlloc (unsigned pages) {
 		exit(EXIT_FAILURE);
 	}
 	arena->start_ptr = arena->ptr;
-	arena->alignment = 16;
+	arena->alignment = 8;
 	arena->size = alloc - page_size;
 	arena->end_ptr = arena->ptr + arena->size;
 	arena->free_list = NULL;
@@ -81,11 +81,14 @@ int ArenaRelease(Arena* arena) {
 //returns -1 if the alignment specified is not possible
 int ArenaSetAlignment(Arena* arena, size_t new_alignment) {
 	assert(arena->ptr < arena->end_ptr);
-	if (new_alignment % 16 || new_alignment < 16 || arena->ptr + new_alignment >= arena->end_ptr)
+	assert(new_alignment != 0);
+	//check if new_alignment is not a power of 2
+	if ((new_alignment & (new_alignment - 1)) != 0) {
 		return -1;
+	}
 	arena->alignment = new_alignment;
-	arena->ptr = (arena->ptr + (arena->alignment -1)) & ~(arena->alignment -1);
-	arena->first_ptr = (arena->first_ptr + (arena->alignment -1)) & ~(arena->alignment -1);
+	arena->ptr = (arena->ptr + arena->alignment -1) & ~(arena->alignment -1);
+	arena->first_ptr = (arena->first_ptr + arena->alignment -1) & ~(arena->alignment -1);
 	return 0;
 }
 
@@ -102,7 +105,7 @@ void* ArenaPush(Arena* arena, size_t size) {
 	void* newptr;
 	newptr = NULL;
 	//reuse a free spot if one is available
-		if (arena->free_list && arena->to_free && ((arena->free_list->first_ptr & (arena->free_list->alignment -1)) != (arena->free_list->ptr & (arena->free_list->alignment -1)))) {
+		if (arena->free_list && arena->to_free && arena->one_type){
 			//if a free list exists, it must already be of one_type unless something went horribly wrong
 			assert(arena->one_type == true);
 			assert(arena->elem_size > 0);
@@ -139,19 +142,16 @@ void ArenaDropTo (Arena* arena, void* pos) {
 		return;
 	}
 
-	arena->ptr = ((uintptr_t)pos + (arena->alignment -1)) & ~(arena->alignment -1);
-	if (arena->ptr == arena->first_ptr) {
-		arena->to_free = NULL;
-	}
-
+	arena->ptr = ((uintptr_t)pos + arena->alignment -1) & ~(arena->alignment -1);
 }
 
-//this function only works for Arenas of a single type. It will "free" the location in memory provided by the pointer and add that address to the free list so that ArenaPush can use it next time
+//this function only works for Arenas of a single type where the element size is the same size or larger than the alignment. It will "free" the location in memory provided by the pointer and add that address to the free list so that ArenaPush can use it next time
 void ArenaDrop (Arena* arena, void* ptr) {
 	assert(arena->ptr < arena->end_ptr);
 	assert(arena->one_type == true);
 	assert(arena->elem_size > 0);
 	assert(arena->ptr >= arena->first_ptr);
+	assert(arena->elem_size >= arena->alignment);
 
 	if( arena->ptr == arena->first_ptr) {
 		fprintf(stderr, "Tried to ArenaDrop() on an Arena that hasn't had anything added to it or has been ArenaPopTo()'d the start of the Arena\n");
@@ -160,7 +160,7 @@ void ArenaDrop (Arena* arena, void* ptr) {
 	}
 	
 	//if ptr is the top element in the Arena stack, just ArenaDropTo() the ptr
-	if ((((arena->ptr) - arena->elem_size) & (arena->alignment -1) ) == ((uintptr_t)ptr & (arena->alignment -1))) {
+	if ((((arena->ptr - arena->elem_size) + arena->alignment -1) & ~(arena->alignment -1) ) == (((uintptr_t)ptr + arena->alignment -1) & ~(arena->alignment -1))) {
 		ArenaDropTo(arena, ptr);
 	} else {
 		//if there is no free_list, make one
@@ -168,6 +168,7 @@ void ArenaDrop (Arena* arena, void* ptr) {
 			arena->free_list = ArenaAlloc(((arena->size / arena->elem_size) + getpagesize() -1) / getpagesize());
 			arena->free_list->one_type = true;
 			arena->free_list->elem_size = sizeof(void*);
+			ArenaSetAlignment(arena->free_list, sizeof(void*));
 		}
 		//this is just in case the free_list ArenaAlloc() fails
 		assert(arena->free_list != NULL);
@@ -198,4 +199,27 @@ void ArenaSwap(Arena* arena, void* elem1, void* elem2) {
 	memcpy(elem2, buffer, arena->elem_size);
 	int release = ArenaRelease(scratch);
 	assert(release == 0);
+}
+
+void ArenaDefrag (Arena* arena) {
+	assert(arena->elem_size >= arena->alignment);
+	assert(arena->one_type == true);
+	if (!arena->to_free) {
+		return;
+	}
+	Arena* scratch = ArenaAlloc((arena->elem_size + getpagesize() -1) / getpagesize() + 1);
+	scratch->one_type = true;
+	scratch->elem_size = arena->elem_size;
+	assert(scratch != NULL);
+	while (arena->to_free) {
+		void* ptr = (void*)(arena->ptr - arena->elem_size);
+		void* buffer = ArenaPush(scratch, arena->elem_size);
+		memcpy(buffer, ptr, arena->elem_size);
+		ArenaPop(arena, ptr);
+		void* newptr = ArenaPush(arena, arena->elem_size);
+		memcpy(newptr, buffer, arena->elem_size);
+		ArenaPop(scratch, buffer);
+	}
+	ArenaRelease(scratch);
+
 }

@@ -41,28 +41,28 @@ Arena* ArenaAlloc (unsigned pages) {
 	}
 	//allocate an extra page for mprotect in debug mode
 	size_t alloc = (pages+1) * page_size;
-	Arena* arena;
-	arena = malloc(sizeof(Arena));
-	assert(arena != NULL);
-	arena->ptr = (uintptr_t) mmap(NULL, alloc, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	if (arena->ptr == (uintptr_t)MAP_FAILED) {
+	Arena arena;
+	arena.start_ptr = (uintptr_t) mmap(NULL, alloc, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (arena.start_ptr == (uintptr_t)MAP_FAILED) {
 		perror("couldn't allocate arena");
 		exit(EXIT_FAILURE);
 	}
-	arena->start_ptr = arena->ptr;
-	arena->alignment = 8;
-	arena->size = alloc - page_size;
-	arena->end_ptr = arena->ptr + arena->size;
-	arena->free_list = NULL;
-	arena->one_type = false;
-	arena->elem_size = 0;
-	arena->to_free = NULL;
-	arena->first_ptr = arena->start_ptr;
-	if(mprotect((void*)(arena->end_ptr), page_size, PROT_NONE) != 0){
+	arena.ptr = arena.start_ptr + sizeof(Arena);
+	arena.alignment = 8;
+	arena.size = alloc - page_size;
+	arena.end_ptr = arena.start_ptr + arena.size;
+	arena.free_list = NULL;
+	arena.one_type = false;
+	arena.elem_size = 0;
+	arena.to_free = NULL;
+	arena.first_ptr = arena.start_ptr + sizeof(Arena);
+	if(mprotect((void*)(arena.end_ptr), page_size, PROT_NONE) != 0){
 		return NULL;
 	}
 
-	return arena;
+	memcpy((void*)arena.start_ptr, &arena, sizeof(Arena));
+
+	return (Arena*)arena.start_ptr;
 }
 int ArenaRelease(Arena* arena) {
 	if (!arena) {
@@ -73,8 +73,7 @@ int ArenaRelease(Arena* arena) {
 		ArenaRelease(arena->free_list);
 		arena->free_list = NULL;
 	}
-	int result = munmap((void*)arena->start_ptr, arena->size + getpagesize());
-	free(arena);
+	int result = munmap(arena, arena->size + getpagesize());
 	return result;
 }
 

@@ -10,9 +10,7 @@
 typedef struct Arena_t {
 	//pointer to the current position in the arena stack
 	uintptr_t ptr;
-	//pointer to the start of the arena
-	uintptr_t start_ptr;
-	//first usable pointer. WIll be the same as start_ptr unless alignment changes
+	//first usable pointer
 	uintptr_t first_ptr;
 	//pointer to the end of the Arena
 	uintptr_t end_ptr;
@@ -41,29 +39,27 @@ Arena* ArenaAlloc (unsigned pages) {
 	}
 	//allocate an extra page for mprotect in debug mode
 	size_t alloc = (pages+1) * page_size;
-	Arena arena;
-	arena.start_ptr = (uintptr_t) mmap(NULL, alloc, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	if (arena.start_ptr == (uintptr_t)MAP_FAILED) {
+	Arena* arena;
+	arena = (Arena*) mmap(NULL, alloc, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (arena == (Arena*)MAP_FAILED) {
 		perror("couldn't allocate arena");
 		exit(EXIT_FAILURE);
 	}
-	arena.ptr = arena.start_ptr + sizeof(Arena);
-	arena.alignment = 8;
-	arena.size = alloc - page_size;
-	arena.end_ptr = arena.start_ptr + arena.size;
-	arena.free_list = NULL;
-	arena.one_type = false;
-	arena.elem_size = 0;
-	arena.to_free = NULL;
-	arena.first_ptr = arena.start_ptr + sizeof(Arena);
-	if(mprotect((void*)(arena.end_ptr), page_size, PROT_NONE) != 0){
+	arena->ptr = (uintptr_t) arena + sizeof(Arena);
+	arena->alignment = 8;
+	arena->size = alloc - page_size;
+	arena->end_ptr = (uintptr_t)arena + arena->size;
+	arena->free_list = NULL;
+	arena->one_type = false;
+	arena->elem_size = 0;
+	arena->to_free = NULL;
+	arena->first_ptr = arena->ptr;
+	if(mprotect((void*)(arena->end_ptr), page_size, PROT_NONE) != 0){
 		return NULL;
 	}
-
-	memcpy((void*)arena.start_ptr, &arena, sizeof(Arena));
-
-	return (Arena*)arena.start_ptr;
+	return arena;
 }
+
 int ArenaRelease(Arena* arena) {
 	if (!arena) {
 		return -1;
@@ -73,8 +69,7 @@ int ArenaRelease(Arena* arena) {
 		ArenaRelease(arena->free_list);
 		arena->free_list = NULL;
 	}
-	int result = munmap(arena, arena->size + getpagesize());
-	return result;
+	return munmap(arena, arena->size + getpagesize());
 }
 
 //returns -1 if the alignment specified is not possible
@@ -98,7 +93,7 @@ void ArenaDrop (Arena* arena, void* ptr);
 void* ArenaPush(Arena* arena, size_t size) {
 	assert(arena->ptr < arena->end_ptr);
 	if (!arena || size == 0 || (arena->ptr + size + arena->alignment) >=  arena->end_ptr){
-		fprintf(stderr, "Something went wrong with the ArenaPush().\n arena = %p\n size to push = %ld\n arena->alignment = %ld\n arena->ptr = %ld\n arena->start_ptr = %ld\n arena->end_ptr = %ld\n", arena, size, arena->alignment, arena->ptr, arena->start_ptr, arena->end_ptr);
+		fprintf(stderr, "Something went wrong with the ArenaPush().\n arena = %p\n size to push = %ld\n arena->alignment = %ld\n arena->ptr = %ld\n arena->end_ptr = %ld\n", arena, size, arena->alignment, arena->ptr, arena->end_ptr);
 		return NULL;
 	}
 	void* newptr;
@@ -137,7 +132,7 @@ void ArenaDropTo (Arena* arena, void* pos) {
 	if (!arena || !pos || 
 		(uintptr_t)pos > arena->end_ptr || 
 		(uintptr_t)pos < arena->first_ptr) {
-		fprintf(stderr,"Something went wrong calling ArenaDropTo() arena = %p\n ArenaPopTo position = %p\n arena->start_ptr = %ld \n arena->end_ptr = %ld \n", arena, pos, arena->start_ptr, arena->end_ptr);
+		fprintf(stderr,"Something went wrong calling ArenaDropTo() arena = %p\n ArenaPopTo position = %p\n arena->end_ptr = %ld \n", arena, pos, arena->end_ptr);
 		return;
 	}
 

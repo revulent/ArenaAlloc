@@ -13,7 +13,7 @@ static void test_ArenaAlloc_and_Release(void) {
 	Arena* arena = ArenaAlloc(2);
 	assert(arena != NULL);
 	// We expect the arena pointers to be nonzero and in the expected order.
-	assert(arena->ptr >= arena->start_ptr);
+	assert(arena->ptr >= arena->first_ptr);
 	int result = ArenaRelease(arena);
 	assert(result == 0);
 }
